@@ -1,0 +1,192 @@
+{
+    "name": "Assistente de Investimentos - RPA + n8n + IA",
+    "nodes": [
+          {
+                  "parameters": {
+                            "httpMethod": "POST",
+                            "path": "clientes",
+                            "responseMode": "onReceived",
+                            "options": {}
+                  },
+                  "id": "1a111111-0000-0000-0000-000000000001",
+                  "name": "Webhook - Recebe Cliente (RPA)",
+                  "type": "n8n-nodes-base.webhook",
+                  "typeVersion": 2,
+                  "position": [-1200, 300],
+                  "webhookId": "clientes-investimentos"
+          },
+          {
+                  "parameters": {
+                            "jsCode": "// Valida e normaliza o cliente recebido do script Python (RPA)\nconst body = $input.first().json.body ?? $input.first().json;\n\nconst obrigatorios = ['nome', 'email', 'saldo', 'perfil'];\nfor (const campo of obrigatorios) {\n  if (!body[campo]) {\n    throw new Error(`Campo obrigatório ausente: ${campo}`);\n  }\n}\n\nconst emailValido = /^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/.test(body.email);\nif (!emailValido) {\n  throw new Error(`Email inválido: ${body.email}`);\n}\n\nreturn [{ json: { nome: body.nome, email: body.email, saldo: body.saldo, perfil: body.perfil } }];"
+                  },
+                  "id": "2a222222-0000-0000-0000-000000000002",
+                  "name": "Code - Validar Cliente",
+                  "type": "n8n-nodes-base.code",
+                  "typeVersion": 2,
+                  "position": [-980, 300]
+          },
+          {
+                  "parameters": {
+                            "url": "https://SEU-USUARIO.github.io/dio-lab-assistente-investimentos-rpa-n8n/investimentos.csv",
+                            "options": {}
+                  },
+                  "id": "3a333333-0000-0000-0000-000000000003",
+                  "name": "HTTP Request - Buscar Investimentos (CSV)",
+                  "type": "n8n-nodes-base.httpRequest",
+                  "typeVersion": 4.2,
+                  "position": [-760, 460]
+          },
+          {
+                  "parameters": {
+                            "jsCode": "// Faz o parse do CSV de investimentos\nconst csvText = $input.first().json.data || $input.first().json;\nconst linhas = csvText.toString().trim().split('\\n');\nconst header = linhas[0].split(',');\nconst produtos = linhas.slice(1).map(l => {\n  const valores = l.split(',');\n  return Object.fromEntries(header.map((h, i) => [h.trim(), valores[i]?.trim()]));\n});\nreturn [{ json: { produtos } }];"
+                  },
+                  "id": "4a444444-0000-0000-0000-000000000004",
+                  "name": "Code - Parse CSV",
+                  "type": "n8n-nodes-base.code",
+                  "typeVersion": 2,
+                  "position": [-540, 460]
+          },
+          {
+                  "parameters": {
+                            "mode": "combine",
+                            "options": {}
+                  },
+                  "id": "5a555555-0000-0000-0000-000000000005",
+                  "name": "Merge - Cliente + Investimentos",
+                  "type": "n8n-nodes-base.merge",
+                  "typeVersion": 3,
+                  "position": [-320, 380]
+          },
+          {
+                  "parameters": {
+                            "jsCode": "// Cruza o perfil do cliente com os produtos de investimento e monta uma mensagem estática (MVP)\nconst cliente = $('Code - Validar Cliente').first().json;\nconst { produtos } = $input.first().json;\n\nconst recomendados = produtos.filter(p => p.perfil === cliente.perfil);\n\nconst listaProdutos = recomendados\n  .map(p => `- ${p.produto} (mínimo R$ ${p.minimo}, rentabilidade ${p.rentabilidade})`)\n  .join('\\n');\n\nconst mensagemEstatica = `Olá ${cliente.nome}, com base no seu perfil ${cliente.perfil}, temos estas opções para você:\\n${listaProdutos}`;\n\nreturn [{\n  json: {\n    ...cliente,\n    produtos_recomendados: recomendados,\n    mensagem_estatica: mensagemEstatica,\n  }\n}];"
+                  },
+                  "id": "6a666666-0000-0000-0000-000000000006",
+                  "name": "Code - Cruzar Perfil x Investimentos (MVP)",
+                  "type": "n8n-nodes-base.code",
+                  "typeVersion": 2,
+                  "position": [-100, 380]
+          },
+          {
+                  "parameters": {
+                            "url": "https://api.openai.com/v1/chat/completions",
+                            "method": "POST",
+                            "authentication": "genericCredentialType",
+                            "genericAuthType": "httpHeaderAuth",
+                            "sendHeaders": true,
+                            "headerParameters": {
+                                        "parameters": [
+                                                      { "name": "Content-Type", "value": "application/json" }
+                                        ]
+                            },
+                            "sendBody": true,
+                            "specifyBody": "json",
+                            "jsonBody": "={\n  \"model\": \"gpt-4o-mini\",\n  \"messages\": [\n    {\"role\": \"system\", \"content\": \"Você é um assistente financeiro. Humanize a recomendação de investimento abaixo, deixando o tom acolhedor e claro, sem inventar produtos que não foram passados. Retorne em JSON com as chaves assunto e corpo.\"},\n    {\"role\": \"user\", \"content\": \"Cliente: {{$json.nome}}\\nPerfil: {{$json.perfil}}\\nSaldo: {{$json.saldo}}\\nRecomendação base: {{$json.mensagem_estatica}}\"}\n  ],\n  \"temperature\": 0.7\n}",
+                            "options": {}
+                  },
+                  "id": "7a777777-0000-0000-0000-000000000007",
+                  "name": "IA Generativa - Humanizar Mensagem (Desafio)",
+                  "type": "n8n-nodes-base.httpRequest",
+                  "typeVersion": 4.2,
+                  "position": [120, 380]
+          },
+          {
+                  "parameters": {
+                            "jsCode": "// Extrai assunto/corpo da IA; se a IA falhar, cai para a mensagem estática do MVP\nconst cliente = $('Code - Cruzar Perfil x Investimentos (MVP)').first().json;\nconst resposta = $input.first().json;\n\nlet assunto = 'Sua recomendação de investimento personalizada';\nlet corpo = cliente.mensagem_estatica;\n\ntry {\n  const texto = resposta.choices[0].message.content;\n  const conteudo = JSON.parse(texto);\n  if (conteudo.assunto && conteudo.corpo) {\n    assunto = conteudo.assunto;\n    corpo = conteudo.corpo;\n  }\n} catch (e) {\n  // fallback silencioso para a mensagem estática do MVP\n}\n\nreturn [{ json: { email: cliente.email, nome: cliente.nome, assunto, corpo } }];"
+                  },
+                  "id": "8a888888-0000-0000-0000-000000000008",
+                  "name": "Code - Montar Email Final",
+                  "type": "n8n-nodes-base.code",
+                  "typeVersion": 2,
+                  "position": [340, 380],
+                  "onError": "continueErrorOutput"
+          },
+          {
+                  "parameters": {
+                            "conditions": {
+                                        "options": { "caseSensitive": true, "leftValue": "", "typeValidation": "strict" },
+                                        "conditions": [
+                                                      {
+                                                                      "leftValue": "={{$json.email}}",
+                                                                      "rightValue": "",
+                                                                      "operator": { "type": "string", "operation": "notEmpty" }
+                                                      }
+                                        ],
+                                        "combinator": "and"
+                            },
+                            "options": {}
+                  },
+                  "id": "9a999999-0000-0000-0000-000000000009",
+                  "name": "IF - Pronto para Enviar?",
+                  "type": "n8n-nodes-base.if",
+                  "typeVersion": 2,
+                  "position": [560, 380]
+          },
+          {
+                  "parameters": {
+                            "sendTo": "={{$json.email}}",
+                            "subject": "={{$json.assunto}}",
+                            "message": "={{$json.corpo}}",
+                            "options": {}
+                  },
+                  "id": "10aaaaaa-0000-0000-0000-000000000010",
+                  "name": "Gmail - Enviar Recomendação",
+                  "type": "n8n-nodes-base.gmail",
+                  "typeVersion": 2.1,
+                  "position": [780, 260],
+                  "webhookId": "gmail-send"
+          },
+          {
+                  "parameters": {
+                            "jsCode": "const item = $input.first().json;\nconsole.log('[ERRO] Falha no processamento do cliente:', JSON.stringify(item));\nreturn [{ json: { ...item, status: 'erro', logged_at: new Date().toISOString() } }];"
+                  },
+                  "id": "11abcdef-0000-0000-0000-000000000011",
+                  "name": "Code - Log de Erro",
+                  "type": "n8n-nodes-base.code",
+                  "typeVersion": 2,
+                  "position": [780, 520]
+          }
+    ],
+    "connections": {
+          "Webhook - Recebe Cliente (RPA)": {
+                  "main": [[{ "node": "Code - Validar Cliente", "type": "main", "index": 0 }]]
+          },
+          "Code - Validar Cliente": {
+                  "main": [
+                            [
+                                        { "node": "HTTP Request - Buscar Investimentos (CSV)", "type": "main", "index": 0 },
+                                        { "node": "Merge - Cliente + Investimentos", "type": "main", "index": 0 }
+                            ]
+                  ]
+          },
+          "HTTP Request - Buscar Investimentos (CSV)": {
+                  "main": [[{ "node": "Code - Parse CSV", "type": "main", "index": 0 }]]
+          },
+          "Code - Parse CSV": {
+                  "main": [[{ "node": "Merge - Cliente + Investimentos", "type": "main", "index": 1 }]]
+          },
+          "Merge - Cliente + Investimentos": {
+                  "main": [[{ "node": "Code - Cruzar Perfil x Investimentos (MVP)", "type": "main", "index": 0 }]]
+          },
+          "Code - Cruzar Perfil x Investimentos (MVP)": {
+                  "main": [[{ "node": "IA Generativa - Humanizar Mensagem (Desafio)", "type": "main", "index": 0 }]]
+          },
+          "IA Generativa - Humanizar Mensagem (Desafio)": {
+                  "main": [[{ "node": "Code - Montar Email Final", "type": "main", "index": 0 }]]
+          },
+          "Code - Montar Email Final": {
+                  "main": [
+                            [{ "node": "IF - Pronto para Enviar?", "type": "main", "index": 0 }],
+                            [{ "node": "Code - Log de Erro", "type": "main", "index": 0 }]
+                  ]
+          },
+          "IF - Pronto para Enviar?": {
+                  "main": [
+                            [{ "node": "Gmail - Enviar Recomendação", "type": "main", "index": 0 }],
+                            [{ "node": "Code - Log de Erro", "type": "main", "index": 0 }]
+                  ]
+          }
+    },
+    "settings": { "executionOrder": "v1" },
+    "pinData": {}
+}
